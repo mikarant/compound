@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Wed May 13 10:47:35 2020
+
+@author: rantanem
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import matplotlib.dates as mdates
+import xarray as xr
+from pyproj import Proj
+import sys
+
+# if command-line arguments are not given, use default data
+if len( sys.argv ) != 2:
+    place = 'oulu'
+    print(sys.argv[0],'Give place as a command-line argument. Now using ' +place.capitalize())
+    
+else:
+    place = sys.argv[1]
+    
+
+
+
+
+path = '/home/rantanem/Documents/python/predict/dates/fintidegauges/'
+output_path = '/home/rantanem/Documents/python/predict/dates/'
+
+filename = place + 'sl.txt'
+filename_2019 = place + '_tunti2019.txt'
+
+filepath = path + filename
+
+gridfile ="/home/rantanem/Downloads/daily_avg_rel_hum_1961_2018_netcdf/rrday.nc"
+
+mareograph_coordinates = {'kemi' :        [65.67, 24.52],
+                          'oulu' :        [65.04, 25.42],
+                          'kaskinen' :    [62.34, 21.21],
+                          'pietarsaari' : [63.71, 22.69],
+                          'rauma' :       [61.13, 21.43],
+                          'föglö':        [60.03, 20.38],
+                          'hanko':        [59.82, 22.98],
+                          'helsinki':     [60.15, 24.96],
+                          'hamina':       [60.56, 27.18]
+                          }
+
+if place in mareograph_coordinates:
+    print(place.capitalize() + ' is valid place. Continuing...')
+else:
+    print('Place is not valid. Give one of these:')
+    print(list(mareograph_coordinates.keys()))
+    sys.exit()
+
+startYear = 1961
+endYear = 2019
+
+# percentiles for the threshold values:
+per_elevated = 0.95
+per_high = 0.98    
+
+
+
+
+
+def modify_data(df, valuename='Value'):
+    
+    df.columns = ["Year", "Month", "Day", "Hour", valuename]
+    df.index =  pd.to_datetime(df[['Year','Month','Day','Hour']])
+    df = df.drop(columns=['Year','Month','Day','Hour'])
+    
+    return(df)
+
+### read the data
+data = pd.DataFrame(np.genfromtxt(filepath))
+data.columns = ["Year", "Month", "Day", "Hour","Sea_level"]
+
+data = data[(data.Year>=startYear)]
+
+
+
+
+
+data.index =  pd.to_datetime(data[['Year','Month','Day','Hour']])
+
+
+data = data.drop(columns=['Year','Month','Day','Hour'])
+
+additional_data = pd.DataFrame(np.genfromtxt(path + filename_2019))
+additional_data = modify_data(additional_data,'Sea_level')
+
+
+
+allData = pd.concat([data, additional_data])
+
+
+
+allData.index  = allData.index + pd.to_timedelta('-6H')
+dailymeans = allData.groupby(pd.Grouper(freq='1D')).mean()
+dailymax = allData.groupby(pd.Grouper(freq='1D')).max()
+yearlymeans = allData.iloc[1:].groupby(pd.Grouper(freq='1Y')).mean()
+
+fig = plt.figure(figsize=(10,5),dpi=120)
+
+plt.plot(dailymax)
+plt.ylim(-1000,2000)
+plt.xlim(pd.to_datetime('2015-1-1'), pd.to_datetime('2020-12-31'))
+
+missing_days = np.sum(np.isnan(dailymax))
+missing_days_in_percents = np.round((np.sum(np.isnan(dailymax)) / len(dailymax))*100,1)
+
+print('Missing days: ' + str( missing_days.values[0]))
+print('Missing days in percents: ' + str( missing_days_in_percents.values[0]))
+
+
+missing_data_by_year = np.isnan(dailymax).groupby(dailymax.index.year).sum()
+fig = plt.figure(figsize=(10,5),dpi=120)
+plt.bar(missing_data_by_year.index, missing_data_by_year.values.squeeze())
+
+missing_data_by_month = np.isnan(dailymax).groupby(dailymax.index.month).sum()
+fig = plt.figure(figsize=(10,5),dpi=120)
+plt.bar(missing_data_by_month.index, missing_data_by_month.values.squeeze())
+
+
+
+### calculate linear trend in daily means
+y = np.array(dailymeans.Sea_level.values)
+x = mdates.date2num(np.array(dailymeans.index.values))
+idx = ~np.isnan(y)
+
+z = np.polyfit(x[idx], y[idx], 1)
+p = np.poly1d(z)
+xx = np.linspace(x.min(), x.max(), len(dailymax))
+dd = mdates.num2date(xx)
+# print('Trend in dailymeans: ' + str(np.round(p.c[0]*20*365/10,2)) + ' cm/10y')
+
+
+
+### calculate linear trend in yearly means
+y = np.array(yearlymeans.Sea_level.values)
+x = mdates.date2num(np.array(yearlymeans.index.values))
+idx = ~np.isnan(y)
+
+z = np.polyfit(x[idx], y[idx], 1)
+p2 = np.poly1d(z)
+xx2 = np.linspace(x.min(), x.max(), len(dailymax))
+dd = mdates.num2date(xx)
+
+# print('Trend in yearly means: ' + str(np.round(p2.c[0]*20*365/10,2)) + ' cm/10y')
+
+
+### remove the *yearly* trend from daily maximum values
+dailymax.Sea_level = dailymax.Sea_level - p2(xx)
+dailymeans.Sea_level = dailymeans.Sea_level - p2(xx)
+
+
+################################
+## precipitation
+
+dset = xr.open_dataset(gridfile)
+
+
+finproj = Proj("epsg:3067")
+
+x, y = finproj(mareograph_coordinates[place][1], mareograph_coordinates[place][0], inverse=False)
+
+
+# ## select only the nearest grid point
+# prec = dset.sel(Lat=y, Lon=x, method='nearest')
+# prec = prec.to_dataframe().drop(columns=['Lon','Lat'])
+
+
+### select mean precipitation averaged over the grid points 
+### +-30 km around the mareograph
+dist = 30000
+inc = 10000
+new_x = np.arange(x-dist, x+dist+inc, inc)
+new_y = np.arange(y-dist, y+dist+inc, inc)
+prec1 = dset.interp(Lat=new_y, Lon=new_x, method = 'nearest').RRday.mean(dim='Lat').mean(dim='Lon')
+prec1 = prec1.to_dataframe()
+
+# g = prec.groupby(prec.index.year).mean()
+# g1 = prec1.groupby(prec1.index.year).mean()
+
+# fig = plt.figure(figsize=(10,5),dpi=120)
+# plt.plot(g, label='Nearest grid point')
+# plt.plot(g1, label = ' mean at ' + str(dist/1000) + 'km radius')
+
+# plt.plot(g1-g, label='Difference')
+# plt.legend()
+# plt.grid()
+# plt.ylim(0,3)
+
+### concatenate with daily sea levels
+a = pd.concat([dailymax,prec1.RRday], join='outer', axis=1)
+
+a = a.dropna()
+
+### rename column
+a.rename(columns={'RRday':'Precipitation'}, inplace=True)
+### round sea levels to centimeters
+a['Sea_level'] = a['Sea_level'].round()/10
+### round precipitation to millimeters
+a['Precipitation'] = a['Precipitation'].round(1)
+### add label to dates
+a.index.name = 'Date'
+
+
+preclevel0 = np.round(a.Precipitation.quantile(0.5),2)
+sealevel0 = np.round(a.Sea_level.quantile(0.5),0)
+preclevel1 = np.round(a.Precipitation.quantile(per_elevated),2)
+sealevel1 = np.round(a.Sea_level.quantile(per_elevated),0)
+preclevel2 = np.round(a.Precipitation.quantile(per_high),2)
+sealevel2 = np.round(a.Sea_level.quantile(per_high),0)
+sealevel3 = np.round(a.Sea_level.quantile(0.99),0)
+preclevel3 = np.round(a.Precipitation.quantile(0.99),0)
+
+print('\nPrecipitation 90th: ' + str(preclevel1 ))
+print('Precipitation 98th: ' + str(preclevel2 ))
+print('Sea level 90th: ' + str(sealevel1 ))
+print('Sea level 98th: ' + str(sealevel2 ))
+print(' ')
+
+output_path = output_path  + place + '/'
+
+
+
+#### Condition 1: compound elevated level
+comp_elevated = (a.Sea_level >= sealevel1) & (a.Precipitation >= preclevel1) 
+
+#### Condition 2: compound high level
+comp_high = (a.Sea_level >= sealevel2) & (a.Precipitation >= preclevel2) 
+
+
+a[comp_elevated].to_csv(output_path + 'Dates_compound_elevated_' + place + '_grid.csv')
+
+a[comp_high].to_csv(output_path + 'Dates_compound_high_' + place + '_grid.csv')
+
+### non-compound events
+##### high & elevated sea level alone
+high_sealevel = (a.Sea_level >= sealevel2) & (a.Precipitation < preclevel0)
+
+a[high_sealevel].to_csv(output_path + 'Dates_sea_level_high_' + place + '_grid.csv')
+
+elevated_sealevel = (a.Sea_level >= sealevel1) & (a.Precipitation < preclevel0)
+
+a[elevated_sealevel].to_csv(output_path + 'Dates_sea_level_elevated_' + place + '_grid.csv')
+
+##### high & elevated precipitation alone
+high_prec = (a.Precipitation >= preclevel2) & (a.Sea_level < sealevel0)
+
+a[high_prec].to_csv(output_path + 'Dates_prec_high_' + place + '_grid.csv')
+
+elevated_prec = (a.Precipitation >= preclevel1)  & (a.Sea_level < sealevel0)
+
+a[elevated_prec].to_csv(output_path + 'Dates_prec_elevated_' + place + '_grid.csv')
+
+
+
+##### high & elevated sea level
+high_sealevel = (a.Sea_level >= sealevel2) 
+
+a[high_sealevel].to_csv(output_path + 'Dates_sea_level_all_high_' + place + '_grid.csv')
+
+elevated_sealevel = (a.Sea_level >= sealevel1)
+
+a[elevated_sealevel].to_csv(output_path + 'Dates_sea_level_all_elevated_' + place + '_grid.csv')
+
+
+##### high & elevated precipitation 
+high_prec = (a.Precipitation >= preclevel2) 
+
+a[high_prec].to_csv(output_path + 'Dates_prec_all_high_' + place + '_grid.csv')
+
+elevated_prec = (a.Precipitation >= preclevel1)
+
+a[elevated_prec].to_csv(output_path + 'Dates_prec_all_elevated_' + place + '_grid.csv')
+
+### monthly basis
+g = comp_elevated.groupby(pd.Grouper(freq="M")).sum()
+g.to_csv(output_path + 'Months_compound_elevated_' + place + '_grid.csv')
+
+g = elevated_sealevel.groupby(pd.Grouper(freq="M")).sum()
+g.to_csv(output_path + 'Months_sea_level_elevated_' + place + '_grid.csv')
+
+g = elevated_prec.groupby(pd.Grouper(freq="M")).sum()
+g.to_csv(output_path + 'Months_prec_elevated_' + place + '_grid.csv')
+
+
+### all precipitation and sea-level
+
+a.to_csv(output_path + 'Dates_all_' + place + '_grid.csv')
+
+
