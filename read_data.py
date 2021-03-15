@@ -11,31 +11,32 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import matplotlib.dates as mdates
 import xarray as xr
+import functions as fc
 from pyproj import Proj
 import sys
 
 # if command-line arguments are not given, use default data
 if len( sys.argv ) != 2:
-    place = 'oulu'
+    place = 'helsinki'
     print(sys.argv[0],'Give place as a command-line argument. Now using ' +place.capitalize())
     
 else:
     place = sys.argv[1]
     
 
-
-
-
+## datapoths
 path = '/home/rantanem/Documents/python/predict/dates/fintidegauges/'
 output_path = '/home/rantanem/Documents/python/predict/dates/'
 
+## original data consists data up to 2018. Additional data to cover 2019
 filename = place + 'sl.txt'
 filename_2019 = place + '_tunti2019.txt'
-
 filepath = path + filename
 
+## datafile for precipitation
 gridfile ="/home/rantanem/Downloads/daily_avg_rel_hum_1961_2018_netcdf/rrday.nc"
 
+# define tide gauge coordinates
 mareograph_coordinates = {'kemi' :        [65.67, 24.52],
                           'oulu' :        [65.04, 25.42],
                           'kaskinen' :    [62.34, 21.21],
@@ -54,6 +55,7 @@ else:
     print(list(mareograph_coordinates.keys()))
     sys.exit()
 
+# define the study period
 startYear = 1961
 endYear = 2019
 
@@ -64,50 +66,32 @@ per_high = 0.98
 
 
 
-
-def modify_data(df, valuename='Value'):
-    
-    df.columns = ["Year", "Month", "Day", "Hour", valuename]
-    df.index =  pd.to_datetime(df[['Year','Month','Day','Hour']])
-    df = df.drop(columns=['Year','Month','Day','Hour'])
-    
-    return(df)
-
-### read the data
-data = pd.DataFrame(np.genfromtxt(filepath))
-data.columns = ["Year", "Month", "Day", "Hour","Sea_level"]
-
-data = data[(data.Year>=startYear)]
-
-
-
-
-
-data.index =  pd.to_datetime(data[['Year','Month','Day','Hour']])
-
-
-data = data.drop(columns=['Year','Month','Day','Hour'])
+### read the sea level data
+data = fc.read_sl_data(filepath, startYear)
 
 additional_data = pd.DataFrame(np.genfromtxt(path + filename_2019))
-additional_data = modify_data(additional_data,'Sea_level')
+additional_data = fc.modify_data(additional_data,'Sea_level')
 
-
-
+# concatenate data
 allData = pd.concat([data, additional_data])
 
 
-
+# make daily means and maximums using 6 UTC-6UTC period
 allData.index  = allData.index + pd.to_timedelta('-6H')
 dailymeans = allData.groupby(pd.Grouper(freq='1D')).mean()
 dailymax = allData.groupby(pd.Grouper(freq='1D')).max()
-yearlymeans = allData.iloc[1:].groupby(pd.Grouper(freq='1Y')).mean()
+
+# calculate annual means
+yearlymeans = dailymeans.groupby(pd.Grouper(freq='1Y')).mean()
+
+
 
 fig = plt.figure(figsize=(10,5),dpi=120)
 
-plt.plot(dailymax)
-plt.ylim(-1000,2000)
-plt.xlim(pd.to_datetime('2015-1-1'), pd.to_datetime('2020-12-31'))
+plt.plot(yearlymeans)
+plt.xlim(pd.to_datetime('1960-1-1'), pd.to_datetime('2020-12-31'))
 
+# calculate the number of missing days
 missing_days = np.sum(np.isnan(dailymax))
 missing_days_in_percents = np.round((np.sum(np.isnan(dailymax)) / len(dailymax))*100,1)
 
@@ -118,35 +102,37 @@ print('Missing days in percents: ' + str( missing_days_in_percents.values[0]))
 missing_data_by_year = np.isnan(dailymax).groupby(dailymax.index.year).sum()
 fig = plt.figure(figsize=(10,5),dpi=120)
 plt.bar(missing_data_by_year.index, missing_data_by_year.values.squeeze())
+plt.title('Missing data by year')
+plt.ylabel('Number of missing days')
 
 missing_data_by_month = np.isnan(dailymax).groupby(dailymax.index.month).sum()
 fig = plt.figure(figsize=(10,5),dpi=120)
 plt.bar(missing_data_by_month.index, missing_data_by_month.values.squeeze())
+plt.title('Missing data by month')
+plt.ylabel('Number of missing days')
 
 
 
-### calculate linear trend in daily means
+# ### calculate linear trend in daily means
 y = np.array(dailymeans.Sea_level.values)
-x = mdates.date2num(np.array(dailymeans.index.values))
+x = mdates.date2num(dailymeans.index.values)
 idx = ~np.isnan(y)
 
 z = np.polyfit(x[idx], y[idx], 1)
 p = np.poly1d(z)
 xx = np.linspace(x.min(), x.max(), len(dailymax))
-dd = mdates.num2date(xx)
-# print('Trend in dailymeans: ' + str(np.round(p.c[0]*20*365/10,2)) + ' cm/10y')
+print('Trend in dailymeans: ' + str(np.round(p.c[0]*20*365/10,2)) + ' cm/10y')
 
 
 
 ### calculate linear trend in yearly means
 y = np.array(yearlymeans.Sea_level.values)
-x = mdates.date2num(np.array(yearlymeans.index.values))
+x = mdates.date2num(yearlymeans.index.values)
 idx = ~np.isnan(y)
 
 z = np.polyfit(x[idx], y[idx], 1)
 p2 = np.poly1d(z)
-xx2 = np.linspace(x.min(), x.max(), len(dailymax))
-dd = mdates.num2date(xx)
+
 
 # print('Trend in yearly means: ' + str(np.round(p2.c[0]*20*365/10,2)) + ' cm/10y')
 
@@ -167,11 +153,6 @@ finproj = Proj("epsg:3067")
 x, y = finproj(mareograph_coordinates[place][1], mareograph_coordinates[place][0], inverse=False)
 
 
-# ## select only the nearest grid point
-# prec = dset.sel(Lat=y, Lon=x, method='nearest')
-# prec = prec.to_dataframe().drop(columns=['Lon','Lat'])
-
-
 ### select mean precipitation averaged over the grid points 
 ### +-30 km around the mareograph
 dist = 30000
@@ -181,22 +162,12 @@ new_y = np.arange(y-dist, y+dist+inc, inc)
 prec1 = dset.interp(Lat=new_y, Lon=new_x, method = 'nearest').RRday.mean(dim='Lat').mean(dim='Lon')
 prec1 = prec1.to_dataframe()
 
-# g = prec.groupby(prec.index.year).mean()
-# g1 = prec1.groupby(prec1.index.year).mean()
 
-# fig = plt.figure(figsize=(10,5),dpi=120)
-# plt.plot(g, label='Nearest grid point')
-# plt.plot(g1, label = ' mean at ' + str(dist/1000) + 'km radius')
+### concatenate with daily sea levels and drop NaN's
+prec1.index = prec1.index + pd.to_timedelta('1D') 
+a = pd.concat([dailymax,prec1.RRday], join='outer', axis=1).dropna()
 
-# plt.plot(g1-g, label='Difference')
-# plt.legend()
-# plt.grid()
-# plt.ylim(0,3)
 
-### concatenate with daily sea levels
-a = pd.concat([dailymax,prec1.RRday], join='outer', axis=1)
-
-a = a.dropna()
 
 ### rename column
 a.rename(columns={'RRday':'Precipitation'}, inplace=True)
@@ -214,8 +185,7 @@ preclevel1 = np.round(a.Precipitation.quantile(per_elevated),2)
 sealevel1 = np.round(a.Sea_level.quantile(per_elevated),0)
 preclevel2 = np.round(a.Precipitation.quantile(per_high),2)
 sealevel2 = np.round(a.Sea_level.quantile(per_high),0)
-sealevel3 = np.round(a.Sea_level.quantile(0.99),0)
-preclevel3 = np.round(a.Precipitation.quantile(0.99),0)
+
 
 print('\nPrecipitation 90th: ' + str(preclevel1 ))
 print('Precipitation 98th: ' + str(preclevel2 ))
