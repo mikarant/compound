@@ -28,3 +28,26 @@ def modify_data(df, valuename='Value'):
     df = df.drop(columns=['Year','Month','Day','Hour'])
     
     return(df)
+
+def independent_events(df, maxvar):
+    
+    
+    diff = df.index.to_series().diff()
+    df["stormID"] = np.nan
+    df["Date"] = df.index
+
+
+    stormID = 0
+    for d in df.index:
+        D = diff[d]
+
+        if (D > pd.Timedelta(1, unit='D')) | (pd.isnull(D)):
+            stormID +=  1
+            df['stormID'][d] = stormID
+        else:
+            df['stormID'][d] = stormID
+
+    new_df = df.groupby(df['stormID']).max(maxvar)
+    new_df.index = df['Date'].groupby(df['stormID']).max('Sea_level')
+    
+    return new_df

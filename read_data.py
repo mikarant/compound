@@ -14,10 +14,11 @@ import xarray as xr
 import functions as fc
 from pyproj import Proj
 import sys
+pd.options.mode.chained_assignment = None  # default='warn'
 
 # if command-line arguments are not given, use default data
 if len( sys.argv ) != 2:
-    place = 'helsinki'
+    place = 'kemi'
     print(sys.argv[0],'Give place as a command-line argument. Now using ' +place.capitalize())
     
 else:
@@ -61,7 +62,7 @@ endYear = 2019
 
 # percentiles for the threshold values:
 per_elevated = 0.95
-per_high = 0.98    
+per_high = 0.99
 
 
 
@@ -86,10 +87,10 @@ yearlymeans = dailymeans.groupby(pd.Grouper(freq='1Y')).mean()
 
 
 
-fig = plt.figure(figsize=(10,5),dpi=120)
+# fig = plt.figure(figsize=(10,5),dpi=120)
 
-plt.plot(yearlymeans)
-plt.xlim(pd.to_datetime('1960-1-1'), pd.to_datetime('2020-12-31'))
+# plt.plot(yearlymeans)
+# plt.xlim(pd.to_datetime('1960-1-1'), pd.to_datetime('2020-12-31'))
 
 # calculate the number of missing days
 missing_days = np.sum(np.isnan(dailymax))
@@ -100,16 +101,16 @@ print('Missing days in percents: ' + str( missing_days_in_percents.values[0]))
 
 
 missing_data_by_year = np.isnan(dailymax).groupby(dailymax.index.year).sum()
-fig = plt.figure(figsize=(10,5),dpi=120)
-plt.bar(missing_data_by_year.index, missing_data_by_year.values.squeeze())
-plt.title('Missing data by year')
-plt.ylabel('Number of missing days')
+# fig = plt.figure(figsize=(10,5),dpi=120)
+# plt.bar(missing_data_by_year.index, missing_data_by_year.values.squeeze())
+# plt.title('Missing data by year')
+# plt.ylabel('Number of missing days')
 
 missing_data_by_month = np.isnan(dailymax).groupby(dailymax.index.month).sum()
-fig = plt.figure(figsize=(10,5),dpi=120)
-plt.bar(missing_data_by_month.index, missing_data_by_month.values.squeeze())
-plt.title('Missing data by month')
-plt.ylabel('Number of missing days')
+# fig = plt.figure(figsize=(10,5),dpi=120)
+# plt.bar(missing_data_by_month.index, missing_data_by_month.values.squeeze())
+# plt.title('Missing data by month')
+# plt.ylabel('Number of missing days')
 
 
 
@@ -164,7 +165,7 @@ prec1 = prec1.to_dataframe()
 
 
 ### concatenate with daily sea levels and drop NaN's
-prec1.index = prec1.index + pd.to_timedelta('1D') 
+prec1.index = prec1.index + pd.to_timedelta('0D') 
 a = pd.concat([dailymax,prec1.RRday], join='outer', axis=1).dropna()
 
 
@@ -179,8 +180,10 @@ a['Precipitation'] = a['Precipitation'].round(1)
 a.index.name = 'Date'
 
 
-preclevel0 = np.round(a.Precipitation.quantile(0.5),2)
-sealevel0 = np.round(a.Sea_level.quantile(0.5),0)
+
+
+preclevel0 = np.round(a.Precipitation.quantile(0.98),2)
+sealevel0 = np.round(a.Sea_level.quantile(0.98),0)
 preclevel1 = np.round(a.Precipitation.quantile(per_elevated),2)
 sealevel1 = np.round(a.Sea_level.quantile(per_elevated),0)
 preclevel2 = np.round(a.Precipitation.quantile(per_high),2)
@@ -198,55 +201,65 @@ output_path = output_path  + place + '/'
 
 
 #### Condition 1: compound elevated level
-comp_elevated = (a.Sea_level >= sealevel1) & (a.Precipitation >= preclevel1) 
+comp_elevated = (a.Sea_level >= sealevel1) & (a.Precipitation >= preclevel1)
+
+ 
+## take only independent events (i.e. remove consecutive events)
+df_elev = fc.independent_events(a[comp_elevated], 'Sea_level')
+df_elev.to_csv(output_path + 'Dates_compound_elevated_' + place + '_grid.csv')
+
+
 
 #### Condition 2: compound high level
 comp_high = (a.Sea_level >= sealevel2) & (a.Precipitation >= preclevel2) 
+df_high = fc.independent_events(a[comp_high], 'Sea_level')
+df_high.to_csv(output_path + 'Dates_compound_high_' + place + '_grid.csv')
 
 
-a[comp_elevated].to_csv(output_path + 'Dates_compound_elevated_' + place + '_grid.csv')
 
-a[comp_high].to_csv(output_path + 'Dates_compound_high_' + place + '_grid.csv')
 
 ### non-compound events
-##### high & elevated sea level alone
-high_sealevel = (a.Sea_level >= sealevel2) & (a.Precipitation < preclevel0)
 
-a[high_sealevel].to_csv(output_path + 'Dates_sea_level_high_' + place + '_grid.csv')
+##### high & elevated sea level alone
+high_sealevel = (a.Sea_level >= sealevel2) & (a.Precipitation < preclevel2)
+df_high_sl = fc.independent_events(a[high_sealevel], 'Sea_level')
+
+df_high_sl.to_csv(output_path + 'Dates_sea_level_high_' + place + '_grid.csv')
 
 elevated_sealevel = (a.Sea_level >= sealevel1) & (a.Precipitation < preclevel0)
+df_elev_sl = fc.independent_events(a[elevated_sealevel], 'Sea_level')
 
-a[elevated_sealevel].to_csv(output_path + 'Dates_sea_level_elevated_' + place + '_grid.csv')
+df_elev_sl.to_csv(output_path + 'Dates_sea_level_elevated_' + place + '_grid.csv')
 
 ##### high & elevated precipitation alone
-high_prec = (a.Precipitation >= preclevel2) & (a.Sea_level < sealevel0)
-
-a[high_prec].to_csv(output_path + 'Dates_prec_high_' + place + '_grid.csv')
+high_prec = (a.Precipitation >= preclevel0) & (a.Sea_level < sealevel2)
+df_high_prec = fc.independent_events(a[high_prec], 'Precipitation')
+df_high_prec.to_csv(output_path + 'Dates_prec_high_' + place + '_grid.csv')
 
 elevated_prec = (a.Precipitation >= preclevel1)  & (a.Sea_level < sealevel0)
-
-a[elevated_prec].to_csv(output_path + 'Dates_prec_elevated_' + place + '_grid.csv')
+df_elev_prec = fc.independent_events(a[elevated_prec], 'Precipitation')
+df_elev_prec.to_csv(output_path + 'Dates_prec_elevated_' + place + '_grid.csv')
 
 
 
 ##### high & elevated sea level
-high_sealevel = (a.Sea_level >= sealevel2) 
+# high_sealevel = (a.Sea_level >= sealevel2) 
 
-a[high_sealevel].to_csv(output_path + 'Dates_sea_level_all_high_' + place + '_grid.csv')
+# a[high_sealevel].to_csv(output_path + 'Dates_sea_level_all_high_' + place + '_grid.csv')
 
-elevated_sealevel = (a.Sea_level >= sealevel1)
+# elevated_sealevel = (a.Sea_level >= sealevel1)
 
-a[elevated_sealevel].to_csv(output_path + 'Dates_sea_level_all_elevated_' + place + '_grid.csv')
+# a[elevated_sealevel].to_csv(output_path + 'Dates_sea_level_all_elevated_' + place + '_grid.csv')
 
 
-##### high & elevated precipitation 
-high_prec = (a.Precipitation >= preclevel2) 
+# ##### high & elevated precipitation 
+# high_prec = (a.Precipitation >= preclevel2) 
 
-a[high_prec].to_csv(output_path + 'Dates_prec_all_high_' + place + '_grid.csv')
+# a[high_prec].to_csv(output_path + 'Dates_prec_all_high_' + place + '_grid.csv')
 
-elevated_prec = (a.Precipitation >= preclevel1)
+# elevated_prec = (a.Precipitation >= preclevel1)
 
-a[elevated_prec].to_csv(output_path + 'Dates_prec_all_elevated_' + place + '_grid.csv')
+# a[elevated_prec].to_csv(output_path + 'Dates_prec_all_elevated_' + place + '_grid.csv')
 
 ### monthly basis
 g = comp_elevated.groupby(pd.Grouper(freq="M")).sum()
